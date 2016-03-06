@@ -2,6 +2,7 @@
 
 import sys
 import os
+import time
 import requests
 from lxml import html
 
@@ -12,8 +13,10 @@ if len(sys.argv) == 1:
     
 lastname = sys.argv[1]
 
+s = requests.Session()
+
 url = u'http://geneteka.genealodzy.pl/index.php?search_lastname=%s&search_lastname2=&from_date=&to_date=&rpp1=&bdm=&w=&op=se&lang=pol&exac=1' % lastname
-page = requests.get(url)
+page = s.get(url)
 if page.status_code != 200:
     print ('no 200 code')
     sys.exit(1)
@@ -46,8 +49,11 @@ for link in tree.xpath('//td[@class="gt"]/a'):
 
 def parse_list(url, mode='', find_next_pages=True):
     
-    print url
-    page = requests.get(url)
+    global s
+    
+    print '----'
+    time.sleep(0.5)
+    page = s.get(url)
     if page.status_code != 200:
         print ('no 200 code [!]')
         return False
@@ -55,15 +61,27 @@ def parse_list(url, mode='', find_next_pages=True):
     tree = html.fromstring(page.text)
     
     if find_next_pages:
-        for link in tree.xpath('//center/a'):
+        for link in tree.xpath('//a'):
             url = link.values()[0]
-            parse_list(u'http://geneteka.genealodzy.pl/%s' % url, mode, False)
-            
+            if url.find('rpp1') > -1:
+                parse_list(u'http://geneteka.genealodzy.pl/%s' % url, mode, False)
+    
+    subhead = tree.xpath('//tr[@class="subhead"]')
+    if not subhead or len(subhead) == 0:
+        subhead = tree.xpath('//tr[@class="head"]')
+        
+    if subhead and len(subhead) > 0:
+        item = subhead[0]
+        while item.getnext() is not None:
+            item = item.getnext()
+            print item.text_content()
 
-parse_list(pages_b[0])
-#print pages_b
-#print pages_m
-#print pages_d
+for i in pages_b:
+    parse_list(i)
+for i in pages_m:
+    parse_list(i)
+for i in pages_d:
+    parse_list(i)
         
     #print dir(link)
     
