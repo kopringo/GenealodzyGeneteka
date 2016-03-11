@@ -1,10 +1,14 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 import sys
 import os
 import time
+import codecs
 import requests
 from lxml import html
+
+sys.stdout = codecs.getwriter('utf8')(sys.stdout)
 
 if len(sys.argv) == 1:
     print ('no params')
@@ -79,6 +83,8 @@ def parse_row(row, mode=''):
     if mode == 'B' or mode == 'D':
         
         items = row.getchildren()
+        if len(items) < 9:
+            return None
         note = find_titles(items[9])
         urls = find_hrefs(items[11])
         
@@ -126,6 +132,8 @@ def parse_row(row, mode=''):
             }
             
             return item
+        
+    return None
     
 
 def parse_list(url, mode='', find_next_pages=True):
@@ -164,9 +172,23 @@ def parse_list(url, mode='', find_next_pages=True):
             
     return items
 
-print parse_list(pages_b[0], 'B')
-print parse_list(pages_d[0], 'D')
-print parse_list(pages_m[0], 'M')
+b_items = []
+d_items = []
+m_items = []
+for k in pages_b:
+    b_items.extend(parse_list(k, 'B'))
+for k in pages_d:
+    d_items.extend(parse_list(k, 'D'))
+for k in pages_m:
+    m_items.extend(parse_list(k, 'M'))
+    
+for item in b_items:
+    print 'B;', item['year'], item['doc'], item['firstname'], item['lastname'], item['parish']
+for item in d_items:
+    print 'D;', item['year'], item['doc'], item['firstname'], item['lastname'], item['parish']
+for item in m_items:
+    print 'M;', item['year'], item['doc'], item['firstname1'], item['lastname1'], item['firstname2'], item['lastname2'], item['parish']
+
 """
 for i in pages_b:
     parse_list(i, 'B')
