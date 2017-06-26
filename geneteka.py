@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
 import sys
 import time
-import requests
+import json
 import getopt
 import logging
+import hashlib
+import requests
+
 from lxml import html
 # from pip._vendor.distlib.locators import HTML_CONTENT_TYPE
 
@@ -68,66 +72,115 @@ class Geneteka:
             level = logging.DEBUG
         self.logger.setLevel(level)
 
+        # logging handler (console)
         handler = logging.StreamHandler()
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
         self.logger.addHandler(handler)
 
-    def http_get(self, url, tries=3):
-        self.logger.info(u'Fetching: %s [try=%s]' % (url, str(4-tries)))
+        # cache
+        if self.options['cache']:
+            if not os.path.exists('.cache'):
+                self.logger.debug('No cache folder, mkdir')
+                os.mkdir('.cache')
 
-        page = self.request_session.get(url)
+    def http_get(self, url, tries=3, cache_tag=None, cache=None, referer=None):
+        """ http get request
+            @param url: url to fetch
+            @param tries: how many time we should try to get page
+            @param cache_tag:
+            @param cache:
+        """
+        self.logger.info(u'Fetching: %s [try=%s]', url, str(4-tries))
+
+        if cache is not None:
+            cache_tag = Geneteka.create_cache_tag(cache)
+
+        # read from cache
+        if cache_tag is not None:
+            cache_file = '.cache/%s' % cache_tag
+            if os.path.exists(cache_file):
+                self.logger.debug('Return from cache')
+                return open(cache_file, 'r').read()
+            # print(cache_tag)
+            # sys.exit()
+
+        # download page
+        headers = {'X-Requested-With': 'XMLHttpRequest'}
+        if referer:
+            headers['Referer'] = referer
+        page = self.request_session.get(url, headers=headers)
         if page.status_code != 200:
             if tries > 0:
                 time.sleep(1000)
-                return self.http_get(url, tries-1)
+                return self.http_get(url, tries-1, cache_tag=cache_tag, cache=cache, referer=referer)
             else:
                 raise 'http exception'
-        return page.text
+
+        data = page.text
+
+        # write to cache
+        if cache_tag:
+            cache_file = '.cache/%s' % cache_tag
+            open(cache_file, 'w').write(data)
+
+        return data
+
+    @classmethod
+    def create_cache_tag(cls, key):
+        """ Create a cache hash based on array data"""
+        hash_engine = hashlib.sha1()
+        if isinstance(key, str):
+            hash_engine.update(key)
+        if isinstance(key, dict):
+            hash_key = str(u'__'.join(sorted(key.values()))).encode('utf-8')
+            hash_engine.update(hash_key)
+        return hash_engine.hexdigest()
 
     def find_params_in_url(self, url):
         """ Find voivodeship in the url """
 
-        self.logger.debug('Find params in url: %s' % url)
+        self.logger.debug('Find params in url: %s', url)
 
         rid = None
-        w = None
+        wid = None
+        wname = None
 
-        o = urlparse(url)
-        query = parse_qs(o.query)
-        if 'w' in query and query['w'][0] in G_VV:
-            w = G_VV[query['w'][0]]
+        url_parsed = urlparse(url)
+        query = parse_qs(url_parsed.query)
+        if 'w' in query:
+            wid = query['w'][0]
+            if query['w'][0] in G_VV:
+                wname = G_VV[query['w'][0]]
 
         if 'rid' in query:
             rid = query['rid'][0]
 
-        return {'rid': rid, 'w': w}
+        return {'rid': rid, 'w': wname, 'wid': wid}
 
     def fetch_main_index(self):
         """
         Fetch data from first page of the search engine
         """
 
-        PATH = G_PATH1 % self.options['lastname']
-        url = '%s://%s/%s' % (G_PROT, G_HOST, PATH)
+        path = G_PATH1 % self.options['lastname']
+        url = '%s://%s/%s' % (G_PROT, G_HOST, path)
 
         html_content = self.http_get(url)
         try:
             tree = html.fromstring(html_content)
-        except:
+        except:  #  Exception as e
             pass
             # @todo
 
-        pages_b = []
-        pages_m = []
-        pages_d = []
+        pages = []
 
         for link in tree.xpath('//td[@class="gt"]/a'):
 
             ilosc = 0
             try:
                 ilosc = int(link.text_content().strip())
-            except:
+            except Exception:  # as e
                 pass
 
             if ilosc > 0:
@@ -135,54 +188,50 @@ class Geneteka:
                 count = int(link.text_content().strip())
 
                 rid_w = self.find_params_in_url(url)
-                self.logger.info(u'%s %s %s' % (rid_w['w'], rid_w['rid'], str(count)))
+                self.logger.info(u'%s %s %s', rid_w['w'], rid_w['rid'], str(count))
 
                 area = {
                     'url': u'http://geneteka.genealodzy.pl/%s' % url,
                     'rid': rid_w['rid'],
-                    'w': rid_w['w']
+                    'w': rid_w['w'],
+                    'wid': rid_w['wid'],
+                    'count': count,
                 }
+                pages.append(area)
 
-                if rid_w['rid'] == 'B':
-                    pages_b.append(area)
-                if rid_w['rid'] == 'D':
-                    pages_d.append(area)
-                if rid_w['rid'] == 'S':
-                    pages_m.append(area)
-
-        return {
-            'b': pages_b,
-            'm': pages_m,
-            'd': pages_d
-        }
+        return pages
 
     def fetch_area(self, area, limit=1):
-        self.logger.debug('Fetch area: %s [l=%s]' % (area['url'], str(limit)))
+        """ Fetch single area """
+        self.logger.debug('Fetch area: %s [l=%s]', area['url'], str(limit))
 
         # Check if the limit has been reached
         if limit == 0:
             self.logger.debug('Limit=0')
-            return
+            return []
 
-        html_content = self.http_get(area['url'])
-        try:
-            tree = html.fromstring(html_content)
-        except:
-            pass
-            # @todo
+        area['url'] = 'http://geneteka.genealodzy.pl/api/getAct.php?draw=1&start=0&length=50&op=gt&lang=pol&search_lastname=%s&rid=%s&bdm=%s&w=%s' % (self.options['lastname'], area['rid'], area['rid'], area['wid'])
+        referer = 'http://geneteka.genealodzy.pl/index.php?op=gt&lang=pol&search_lastname=%s&search_lastname2=&from_date=&to_date=&exac=&rid=%s&bdm=%s&w=%s' % (self.options['lastname'], area['rid'], area['rid'], area['wid'])
+
+        html_content = self.http_get(area['url'], cache={'url': area['url'], 'count': str(area['count'])}, referer=referer)
+        #try:
+        #    tree = html.fromstring(html_content)
+        #except Exception:  # as e
+        #    pass
+        #    # @todo
 
         # content of pages
         pages = []
-        pages.append(html_content)
+        pages.append(html_content.strip())
 
         # looking for next pages
-        pages = []
         pages_found = 0
-        if limit > 1:
+        if limit > 1 and False:
             for link in tree.xpath('//a'):
                 url = link.values()[0]
                 if url.find('rpp1') > -1:
-                    h_content = self.http_get(u'http://%s/%s' % (G_HOST, url))
+                    full_url = u'http://%s/%s' % (G_HOST, url)
+                    h_content = self.http_get(full_url, cache={'url': full_url, 'count': str(area['count'])})
                     pages.append(h_content)
 
                     pages_found = pages_found + 1
@@ -190,51 +239,63 @@ class Geneteka:
                         break
 
         # parse rows
-        items = []
+        rows = []
+        """
         for page in pages:
             tree = html.fromstring(page)
             subhead = tree.xpath('//tr[@class="subhead"]')
-            if not subhead or len(subhead) == 0:
+            if len(subhead) == 0 or not subhead:
                 subhead = tree.xpath('//tr[@class="head"]')
 
             if subhead and len(subhead) > 0:
                 item = subhead[0]
                 while item.getnext() is not None:
                     item = item.getnext()
-                    r = self.parse_row(item, area['rid'])
-                    if r is not None:
-                        items.append(r)
-        return items
+                    row = self.parse_row(item, area['rid'])
+                    if row is not None:
+                        rows.append(row)
+        print(pages)
+        print(rows)
+        sys.exit()
+        """
+
+        for page in pages:
+            page_rows = json.loads(page)
+            if isinstance(page_rows, dict):
+                rows.extend(page_rows['data'])
+        return rows
 
     def fetch_areas(self, areas):
+        """ Fetch all areas """
         rows = []
         for area in areas:
-            self.logger.info(u'Area: %s [rid=%s]' % (area['w'], area['rid']))
+            self.logger.info(u'Area: %s [rid=%s]', area['w'], area['rid'])
             a_data = self.fetch_area(area, self.options['limit'])
             rows.extend(a_data)
         return rows
 
     def find_titles(self, item):
-        r = []
+        """ Find title """
+        ret = []
         items = item.getchildren()
         for _item in items:
-            _r = self.find_titles(_item)
-            r.extend(_r)
+            ret.extend(self.find_titles(_item))
         if 'title' in item.attrib:
-            r.append(item.attrib['title'])
-        return r
+            ret.append(item.attrib['title'])
+        return ret
 
     def find_hrefs(self, item):
-        r = []
+        """ Find links """
+        ret = []
         items = item.getchildren()
         for _item in items:
-            _r = self.find_hrefs(_item)
-            r.extend(_r)
+            ret.extend(self.find_hrefs(_item))
         if 'href' in item.attrib:
-            r.append(item.attrib['href'])
-        return r
+            ret.append(item.attrib['href'])
+        return ret
 
     def parse_row(self, row, mode=''):
+        """ Parse single row """
         if mode == 'B' or mode == 'D':
             items = row.getchildren()
             if len(items) < 9:
@@ -297,7 +358,8 @@ def parse_opts(argv):
         'limit': 3,  # limit fo pages to fetch in a single area
         'output': None,
         'lastname': None,
-        'debug': False
+        'debug': False,
+        'cache': True
     }
     try:
         opts, args = getopt.getopt(argv, "dhl:o:", ["limit=", "output="])
@@ -312,9 +374,9 @@ def parse_opts(argv):
         elif opt in ("-l", "--limit"):
             try:
                 options['limit'] = int(arg)
-            except:
+            except Exception:  # as e
                 options['limit'] = 3
-        elif opt in ("-d"):
+        elif opt in ("-d", ):
             options['debug'] = True
         elif opt in ("-o", "--output"):
             options['output'] = arg
@@ -332,39 +394,12 @@ def parse_opts(argv):
 
 
 def main(argv):
+    """ Main function """
     options = parse_opts(argv)
-    g = Geneteka(options)
-    data = g.fetch_main_index()
-    data2 = g.fetch_areas(data)
+    geneteka = Geneteka(options)
+    data = geneteka.fetch_main_index()
+    data2 = geneteka.fetch_areas(data)
 
 if __name__ == "__main__":
     main(sys.argv[1:])
 sys.exit()
-
-
-"""
-b_items = []
-d_items = []
-m_items = []
-for k in pages_b:
-    b_items.extend(parse_list(k, 'B'))
-for k in pages_d:
-    d_items.extend(parse_list(k, 'D'))
-for k in pages_m:
-    m_items.extend(parse_list(k, 'M'))
-
-for item in b_items:
-    print('B;', item['year'], item['doc'], item['firstname'], item['lastname'], item['parish'])
-for item in d_items:
-    print('D;', item['year'], item['doc'], item['firstname'], item['lastname'], item['parish'])
-for item in m_items:
-    print('M;', item['year'], item['doc'], item['firstname1'], item['lastname1'], item['firstname2'], item['lastname2'], item['parish'])
-
-
-for i in pages_b:
-    parse_list(i, 'B')
-for i in pages_m:
-    parse_list(i, 'M')
-for i in pages_d:
-    parse_list(i, 'D')
-"""
