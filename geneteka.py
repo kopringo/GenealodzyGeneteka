@@ -53,38 +53,23 @@ G_VV = {
 }
 
 
-class Geneteka:
-    """
-    Class for geneteka.genealodzy.pl search engine
-    """
+class HttpClient:
+    """ Http Client with cache support """
 
-    logger = logging.getLogger('gen')
+    logger = None
     request_session = None
-    options = {}
 
-    def __init__(self, options):
+    def __init__(self, logger, options):
+        self.logger = logger
         self.request_session = requests.Session()
-        self.options = options
-
-        # logging
-        level = logging.INFO
-        if self.options['debug']:
-            level = logging.DEBUG
-        self.logger.setLevel(level)
-
-        # logging handler (console)
-        handler = logging.StreamHandler()
-        handler.setLevel(logging.DEBUG)
-        handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
-        self.logger.addHandler(handler)
-
+        
         # cache
-        if self.options['cache']:
+        if options['cache']:
             if not os.path.exists('.cache'):
                 self.logger.debug('No cache folder, mkdir')
                 os.mkdir('.cache')
 
-    def http_get(self, url, tries=3, cache_tag=None, cache=None, referer=None):
+    def http_get(self, url, tries=3, cache=None, cache_tag=None, referer=None):
         """ http get request
             @param url: url to fetch
             @param tries: how many time we should try to get page
@@ -94,7 +79,7 @@ class Geneteka:
         self.logger.info(u'Fetching: %s [try=%s]', url, str(4-tries))
 
         if cache is not None:
-            cache_tag = Geneteka.create_cache_tag(cache)
+            cache_tag = HttpClient.create_cache_tag(cache)
 
         # read from cache
         if cache_tag is not None:
@@ -113,7 +98,7 @@ class Geneteka:
         if page.status_code != 200:
             if tries > 0:
                 time.sleep(1000)
-                return self.http_get(url, tries-1, cache_tag=cache_tag, cache=cache, referer=referer)
+                return self.http_get(url, tries-1, cache=cache, cache_tag=cache_tag, referer=referer)
             else:
                 raise 'http exception'
 
@@ -137,10 +122,11 @@ class Geneteka:
             hash_engine.update(hash_key)
         return hash_engine.hexdigest()
 
-    def find_params_in_url(self, url):
+    @staticmethod
+    def find_params_in_url(url):
         """ Find voivodeship in the url """
 
-        self.logger.debug('Find params in url: %s', url)
+        # self.logger.debug('Find params in url: %s', url)
 
         rid = None
         wid = None
@@ -158,6 +144,35 @@ class Geneteka:
 
         return {'rid': rid, 'w': wname, 'wid': wid}
 
+
+class Geneteka:
+    """
+    Class for geneteka.genealodzy.pl search engine
+    """
+
+    logger = logging.getLogger('gen')
+    request_session = None
+    options = {}
+    http_client = None
+
+    def __init__(self, options):
+        self.request_session = requests.Session()
+        self.options = options
+
+        # logging
+        level = logging.INFO
+        if self.options['debug']:
+            level = logging.DEBUG
+        self.logger.setLevel(level)
+
+        # logging handler (console)
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
+        self.logger.addHandler(handler)
+
+        self.http_client = HttpClient(self.logger, self.options)
+
     def fetch_main_index(self):
         """
         Fetch data from first page of the search engine
@@ -166,7 +181,7 @@ class Geneteka:
         path = G_PATH1 % self.options['lastname']
         url = '%s://%s/%s' % (G_PROT, G_HOST, path)
 
-        html_content = self.http_get(url)
+        html_content = self.http_client.http_get(url)
         try:
             tree = html.fromstring(html_content)
         except:  #  Exception as e
@@ -187,7 +202,7 @@ class Geneteka:
                 url = link.values()[0]
                 count = int(link.text_content().strip())
 
-                rid_w = self.find_params_in_url(url)
+                rid_w = HttpClient.find_params_in_url(url)
                 self.logger.info(u'%s %s %s', rid_w['w'], rid_w['rid'], str(count))
 
                 area = {
@@ -201,151 +216,182 @@ class Geneteka:
 
         return pages
 
-    def fetch_area(self, area, limit=1):
-        """ Fetch single area """
+    def fetch_area(self, area, start=0, limit=50, http_limit=3):
+        """ Fetch single area
+            @param area: 
+            @param start: records offset
+            @param limit: records limit to fetch
+            @param http_limit: how many times we should try to get data
+            @return: list of records
+        """
         self.logger.debug('Fetch area: %s [l=%s]', area['url'], str(limit))
 
         # Check if the limit has been reached
-        if limit == 0:
-            self.logger.debug('Limit=0')
+        if http_limit == 0:
+            self.logger.debug('http_limit=0')
             return []
 
-        area['url'] = 'http://geneteka.genealodzy.pl/api/getAct.php?draw=1&start=0&length=50&op=gt&lang=pol&search_lastname=%s&rid=%s&bdm=%s&w=%s' % (self.options['lastname'], area['rid'], area['rid'], area['wid'])
+        area['url'] = 'http://geneteka.genealodzy.pl/api/getAct.php?draw=1&start=%s&length=%s&op=gt&lang=pol&search_lastname=%s&rid=%s&bdm=%s&w=%s' % (str(start), str(limit), self.options['lastname'], area['rid'], area['rid'], area['wid'])
         referer = 'http://geneteka.genealodzy.pl/index.php?op=gt&lang=pol&search_lastname=%s&search_lastname2=&from_date=&to_date=&exac=&rid=%s&bdm=%s&w=%s' % (self.options['lastname'], area['rid'], area['rid'], area['wid'])
 
-        html_content = self.http_get(area['url'], cache={'url': area['url'], 'count': str(area['count'])}, referer=referer)
-        #try:
-        #    tree = html.fromstring(html_content)
-        #except Exception:  # as e
-        #    pass
-        #    # @todo
+        html_content = self.http_client.http_get(area['url'], cache={'url': area['url'], 'count': str(area['count'], 'start': str(start))}, referer=referer)
 
-        # content of pages
-        pages = []
-        pages.append(html_content.strip())
-
-        # looking for next pages
-        pages_found = 0
-        if limit > 1 and False:
-            for link in tree.xpath('//a'):
-                url = link.values()[0]
-                if url.find('rpp1') > -1:
-                    full_url = u'http://%s/%s' % (G_HOST, url)
-                    h_content = self.http_get(full_url, cache={'url': full_url, 'count': str(area['count'])})
-                    pages.append(h_content)
-
-                    pages_found = pages_found + 1
-                    if pages_found > limit:
-                        break
-
-        # parse rows
-        rows = []
-        """
-        for page in pages:
-            tree = html.fromstring(page)
-            subhead = tree.xpath('//tr[@class="subhead"]')
-            if len(subhead) == 0 or not subhead:
-                subhead = tree.xpath('//tr[@class="head"]')
-
-            if subhead and len(subhead) > 0:
-                item = subhead[0]
-                while item.getnext() is not None:
-                    item = item.getnext()
-                    row = self.parse_row(item, area['rid'])
-                    if row is not None:
-                        rows.append(row)
-        print(pages)
-        print(rows)
-        sys.exit()
-        """
-
-        for page in pages:
-            page_rows = json.loads(page)
-            if isinstance(page_rows, dict):
-                rows.extend(page_rows['data'])
-        return rows
+        page_rows = json.loads(html_content)
+        if isinstance(page_rows, dict):
+            return page_rows['data']
 
     def fetch_areas(self, areas):
         """ Fetch all areas """
-        rows = []
+
         for area in areas:
             self.logger.info(u'Area: %s [rid=%s]', area['w'], area['rid'])
-            a_data = self.fetch_area(area, self.options['limit'])
-            rows.extend(a_data)
-        return rows
+            page = 0
+            rows = []
+            while page < self.options['limit']:
 
-    def find_titles(self, item):
-        """ Find title """
-        ret = []
-        items = item.getchildren()
-        for _item in items:
-            ret.extend(self.find_titles(_item))
-        if 'title' in item.attrib:
-            ret.append(item.attrib['title'])
-        return ret
+                a_data = self.fetch_area(area, page*50, 50)
+                rows.extend(a_data)
+                page = page + 1
 
-    def find_hrefs(self, item):
-        """ Find links """
-        ret = []
-        items = item.getchildren()
-        for _item in items:
-            ret.extend(self.find_hrefs(_item))
-        if 'href' in item.attrib:
-            ret.append(item.attrib['href'])
-        return ret
+            # parse data
+            parser = Geneteka.Parser(area['rid'])
+            area['rows'] = parser.parse(rows)
 
-    def parse_row(self, row, mode=''):
-        """ Parse single row """
-        if mode == 'B' or mode == 'D':
-            items = row.getchildren()
-            if len(items) < 9:
-                return None
-            note = self.find_titles(items[9])
-            urls = self.find_hrefs(items[11])
+    class AbstractRow:
+        row_type = None
+        year = None
+        a_number = None
+        notes = []
 
-            item = {
-                'lp': items[0].text_content(),  # lp
-                'year': items[1].text_content(),  # rok
-                'doc': items[2].text_content(),  # akt
-                'firstname': items[3].text_content(),  # imie
-                'lastname': items[4].text_content(),  # nazw
-                'father_firstname': items[5].text_content(),  # imie ojca
-                'mother_firstname': items[6].text_content(),  # imie matki
-                'mother_lastname': items[7].text_content(),  # nazw matki
-                'parish': items[8].text_content(),  # parafia
-                'note': note,  # uwagi
-                'urls': urls  # skan
-            }
-            return item
+        def __init__(self, row, row_type=None):
+            self.row_type = row_type
+            self.year = row[0]
+            self.a_number = row[1]
 
-        if mode == 'M':
-            items = row.getchildren()
-            if len(items) == 15:
-                note = self.find_titles(items[12])
-                urls = self.find_hrefs(items[14])
+    class RowBirth(AbstractRow):
+        firstname = None
+        lastname = None
+        father_firstname = None
+        mother_firstname = None
+        mother_lastname = None
+        parish = None
+        place = None
+
+        def __init__(self, row, row_type='B'):
+            super(Geneteka.RowBirth, self).__init__(row, row_type)
+            self.firstname = row[2]
+            self.lastname = row[3]
+            self.father_firstname = row[4]
+            self.mother_firstname = row[5]
+            self.mother_lastname = row[6]
+
+    class RowDeath(RowBirth):
+        """ Death row """
+
+        def __init__(self, row):
+            super(Geneteka.RowDeath, self).__init__(row, 'D')
+
+
+    class RowMariage(AbstractRow):
+        def __init__(self, row):
+            super(Geneteka.RowMariage, self).__init__(row, 'M')
+            
+
+    class Parser:
+        row_type = None
+        row_class = None
+
+        def __init__(self, row_type):
+            self.row_type = row_type
+            if row_type == 'B':
+                self.row_class = Geneteka.RowBirth
+            else if row_type == 'D':
+                self.row_class = Geneteka.RowDeath
+            else if row_type in ['S', 'M']:
+                self.row_class = Geneteka.RowMariage
+            else:
+                raise RuntimeError('Wrong type')
+
+        def parse(self, rows):
+            objects = []
+            for row in rows:
+                obj = self.row_class(row)
+                objects.append(obj)
+            return objects
+
+        """
+        def find_titles(self, item):
+            "Find title"
+            ret = []
+            items = item.getchildren()
+            for _item in items:
+                ret.extend(self.find_titles(_item))
+            if 'title' in item.attrib:
+                ret.append(item.attrib['title'])
+            return ret
+
+        def find_hrefs(self, item):
+            "Find links"
+            ret = []
+            items = item.getchildren()
+            for _item in items:
+                ret.extend(self.find_hrefs(_item))
+            if 'href' in item.attrib:
+                ret.append(item.attrib['href'])
+            return ret
+
+        def parse_row(self, row, mode=''):
+            "Parse single row"
+            if mode == 'B' or mode == 'D':
+                items = row.getchildren()
+                if len(items) < 9:
+                    return None
+                note = self.find_titles(items[9])
+                urls = self.find_hrefs(items[11])
 
                 item = {
                     'lp': items[0].text_content(),  # lp
                     'year': items[1].text_content(),  # rok
                     'doc': items[2].text_content(),  # akt
-
-                    'firstname1': items[3].text_content(),  # imie
-                    'lastname1': items[4].text_content(),  # nazw
-                    'mother_lastname': items[5].text_content(),  # nazw matki
-                    'parents1': self.find_titles(items[6]),
-
-                    'firstname2': items[7].text_content(),  # imie
-                    'lastname2': items[8].text_content(),  # nazw
-                    'mother_lastname2': items[9].text_content(),  # nazw matki
-                    'parents2': self.find_titles(items[10]),
-
-                    'parish': items[11].text_content(),  # parafia
+                    'firstname': items[3].text_content(),  # imie
+                    'lastname': items[4].text_content(),  # nazw
+                    'father_firstname': items[5].text_content(),  # imie ojca
+                    'mother_firstname': items[6].text_content(),  # imie matki
+                    'mother_lastname': items[7].text_content(),  # nazw matki
+                    'parish': items[8].text_content(),  # parafia
                     'note': note,  # uwagi
                     'urls': urls  # skan
                 }
                 return item
-        return None
 
+            if mode == 'M':
+                items = row.getchildren()
+                if len(items) == 15:
+                    note = self.find_titles(items[12])
+                    urls = self.find_hrefs(items[14])
+
+                    item = {
+                        'lp': items[0].text_content(),  # lp
+                        'year': items[1].text_content(),  # rok
+                        'doc': items[2].text_content(),  # akt
+
+                        'firstname1': items[3].text_content(),  # imie
+                        'lastname1': items[4].text_content(),  # nazw
+                        'mother_lastname': items[5].text_content(),  # nazw matki
+                        'parents1': self.find_titles(items[6]),
+
+                        'firstname2': items[7].text_content(),  # imie
+                        'lastname2': items[8].text_content(),  # nazw
+                        'mother_lastname2': items[9].text_content(),  # nazw matki
+                        'parents2': self.find_titles(items[10]),
+
+                        'parish': items[11].text_content(),  # parafia
+                        'note': note,  # uwagi
+                        'urls': urls  # skan
+                    }
+                    return item
+            return None
+            """
 
 def parse_opts_help():
     """ Print help for geneteka.py """
@@ -383,8 +429,14 @@ def parse_opts(argv):
 
     if options['limit'] > 7:
         options['limit'] = 3
+
     if len(args) > 0:
         options['lastname'] = args[0]
+
+    if options['lastname'] is None:
+        print("Please provide lastname")
+        parse_opts_help()
+        sys.exit(1)
 
     return options
 
@@ -399,6 +451,8 @@ def main(argv):
     geneteka = Geneteka(options)
     data = geneteka.fetch_main_index()
     data2 = geneteka.fetch_areas(data)
+
+    print(len(data2))
 
 if __name__ == "__main__":
     main(sys.argv[1:])
