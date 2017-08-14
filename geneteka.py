@@ -11,6 +11,7 @@ import hashlib
 import requests
 
 from lxml import html
+from abc import abstractmethod
 # from pip._vendor.distlib.locators import HTML_CONTENT_TYPE
 
 try:
@@ -234,7 +235,7 @@ class Geneteka:
         area['url'] = 'http://geneteka.genealodzy.pl/api/getAct.php?draw=1&start=%s&length=%s&op=gt&lang=pol&search_lastname=%s&rid=%s&bdm=%s&w=%s' % (str(start), str(limit), self.options['lastname'], area['rid'], area['rid'], area['wid'])
         referer = 'http://geneteka.genealodzy.pl/index.php?op=gt&lang=pol&search_lastname=%s&search_lastname2=&from_date=&to_date=&exac=&rid=%s&bdm=%s&w=%s' % (self.options['lastname'], area['rid'], area['rid'], area['wid'])
 
-        html_content = self.http_client.http_get(area['url'], cache={'url': area['url'], 'count': str(area['count'], 'start': str(start))}, referer=referer)
+        html_content = self.http_client.http_get(area['url'], cache={'url': area['url'], 'count': str(area['count']), 'start': str(start)}, referer=referer)
 
         page_rows = json.loads(html_content)
         if isinstance(page_rows, dict):
@@ -244,10 +245,10 @@ class Geneteka:
         """ Fetch all areas """
 
         for area in areas:
-            self.logger.info(u'Area: %s [rid=%s]', area['w'], area['rid'])
+            self.logger.info(u'Area: %s [rid=%s] [count=%d]', area['w'], area['rid'], area['count'] )
             page = 0
             rows = []
-            while page < self.options['limit']:
+            while page < self.options['limit'] and page*50 < area['count']:
 
                 a_data = self.fetch_area(area, page*50, 50)
                 rows.extend(a_data)
@@ -262,11 +263,17 @@ class Geneteka:
         year = None
         a_number = None
         notes = []
+        parish = None
+        place = None
 
         def __init__(self, row, row_type=None):
             self.row_type = row_type
             self.year = row[0]
             self.a_number = row[1]
+
+        @abstractmethod
+        def __str__(self):
+            raise NotImplementedError()
 
     class RowBirth(AbstractRow):
         firstname = None
@@ -274,8 +281,6 @@ class Geneteka:
         father_firstname = None
         mother_firstname = None
         mother_lastname = None
-        parish = None
-        place = None
 
         def __init__(self, row, row_type='B'):
             super(Geneteka.RowBirth, self).__init__(row, row_type)
@@ -285,17 +290,46 @@ class Geneteka:
             self.mother_firstname = row[5]
             self.mother_lastname = row[6]
 
+            self.parish = row[7]
+            self.place = row[8]
+            if row[9]:
+                self.notes.append(row[9])
+
+        def __str__(self):
+            return u'B %s %s | %s %s' % ( str(self.year), str(self.a_number), self.firstname, self.lastname)
+
     class RowDeath(RowBirth):
         """ Death row """
 
         def __init__(self, row):
             super(Geneteka.RowDeath, self).__init__(row, 'D')
 
+        def __str__(self):
+            return u'D %s %s | %s %s' % ( str(self.year), str(self.a_number), self.firstname, self.lastname)
 
     class RowMariage(AbstractRow):
+        """ Marriage row """
+        m_firstname = None
+        m_lastname = None
+        m_parents = None
+        f_firstname = None
+        f_lastname = None
+        f_parent = None
+
         def __init__(self, row):
             super(Geneteka.RowMariage, self).__init__(row, 'M')
-            
+            self.m_firstname = row[2]
+            self.m_lastname = row[3]
+            self.m_parents = row[4]
+            self.f_firstname = row[5]
+            self.f_lastname = row[6]
+            self.f_parents = row[7]
+            self.parish = row[8]
+            if row[9]:
+                self.notes.append(row[9])
+
+        def __str__(self):
+            return u'M %s %s | %s %s | %s %s' % ( str(self.year), str(self.a_number), self.m_firstname, self.m_lastname, self.f_firstname, self.f_lastname)
 
     class Parser:
         row_type = None
@@ -305,9 +339,9 @@ class Geneteka:
             self.row_type = row_type
             if row_type == 'B':
                 self.row_class = Geneteka.RowBirth
-            else if row_type == 'D':
+            elif row_type == 'D':
                 self.row_class = Geneteka.RowDeath
-            else if row_type in ['S', 'M']:
+            elif row_type in ['S', 'M']:
                 self.row_class = Geneteka.RowMariage
             else:
                 raise RuntimeError('Wrong type')
@@ -319,79 +353,6 @@ class Geneteka:
                 objects.append(obj)
             return objects
 
-        """
-        def find_titles(self, item):
-            "Find title"
-            ret = []
-            items = item.getchildren()
-            for _item in items:
-                ret.extend(self.find_titles(_item))
-            if 'title' in item.attrib:
-                ret.append(item.attrib['title'])
-            return ret
-
-        def find_hrefs(self, item):
-            "Find links"
-            ret = []
-            items = item.getchildren()
-            for _item in items:
-                ret.extend(self.find_hrefs(_item))
-            if 'href' in item.attrib:
-                ret.append(item.attrib['href'])
-            return ret
-
-        def parse_row(self, row, mode=''):
-            "Parse single row"
-            if mode == 'B' or mode == 'D':
-                items = row.getchildren()
-                if len(items) < 9:
-                    return None
-                note = self.find_titles(items[9])
-                urls = self.find_hrefs(items[11])
-
-                item = {
-                    'lp': items[0].text_content(),  # lp
-                    'year': items[1].text_content(),  # rok
-                    'doc': items[2].text_content(),  # akt
-                    'firstname': items[3].text_content(),  # imie
-                    'lastname': items[4].text_content(),  # nazw
-                    'father_firstname': items[5].text_content(),  # imie ojca
-                    'mother_firstname': items[6].text_content(),  # imie matki
-                    'mother_lastname': items[7].text_content(),  # nazw matki
-                    'parish': items[8].text_content(),  # parafia
-                    'note': note,  # uwagi
-                    'urls': urls  # skan
-                }
-                return item
-
-            if mode == 'M':
-                items = row.getchildren()
-                if len(items) == 15:
-                    note = self.find_titles(items[12])
-                    urls = self.find_hrefs(items[14])
-
-                    item = {
-                        'lp': items[0].text_content(),  # lp
-                        'year': items[1].text_content(),  # rok
-                        'doc': items[2].text_content(),  # akt
-
-                        'firstname1': items[3].text_content(),  # imie
-                        'lastname1': items[4].text_content(),  # nazw
-                        'mother_lastname': items[5].text_content(),  # nazw matki
-                        'parents1': self.find_titles(items[6]),
-
-                        'firstname2': items[7].text_content(),  # imie
-                        'lastname2': items[8].text_content(),  # nazw
-                        'mother_lastname2': items[9].text_content(),  # nazw matki
-                        'parents2': self.find_titles(items[10]),
-
-                        'parish': items[11].text_content(),  # parafia
-                        'note': note,  # uwagi
-                        'urls': urls  # skan
-                    }
-                    return item
-            return None
-            """
 
 def parse_opts_help():
     """ Print help for geneteka.py """
@@ -448,11 +409,14 @@ def parse_opts(argv):
 def main(argv):
     """ Main function """
     options = parse_opts(argv)
+
     geneteka = Geneteka(options)
     data = geneteka.fetch_main_index()
-    data2 = geneteka.fetch_areas(data)
+    geneteka.fetch_areas(data)
 
-    print(len(data2))
+    for area in data:
+        for row in area['rows']:
+            print(row)
 
 if __name__ == "__main__":
     main(sys.argv[1:])
