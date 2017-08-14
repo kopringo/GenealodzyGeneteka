@@ -63,7 +63,7 @@ class HttpClient:
     def __init__(self, logger, options):
         self.logger = logger
         self.request_session = requests.Session()
-        
+
         # cache
         if options['cache']:
             if not os.path.exists('.cache'):
@@ -76,6 +76,7 @@ class HttpClient:
             @param tries: how many time we should try to get page
             @param cache_tag:
             @param cache:
+            @param referer:
         """
         self.logger.info(u'Fetching: %s [try=%s]', url, str(4-tries))
 
@@ -185,7 +186,7 @@ class Geneteka:
         html_content = self.http_client.http_get(url)
         try:
             tree = html.fromstring(html_content)
-        except:  #  Exception as e
+        except: #Exception as e
             pass
             # @todo
 
@@ -219,7 +220,7 @@ class Geneteka:
 
     def fetch_area(self, area, start=0, limit=50, http_limit=3):
         """ Fetch single area
-            @param area: 
+            @param area:
             @param start: records offset
             @param limit: records limit to fetch
             @param http_limit: how many times we should try to get data
@@ -245,7 +246,7 @@ class Geneteka:
         """ Fetch all areas """
 
         for area in areas:
-            self.logger.info(u'Area: %s [rid=%s] [count=%d]', area['w'], area['rid'], area['count'] )
+            self.logger.info(u'Area: %s [rid=%s] [count=%d]', area['w'], area['rid'], area['count'])
             page = 0
             rows = []
             while page < self.options['limit'] and page*50 < area['count']:
@@ -296,7 +297,10 @@ class Geneteka:
                 self.notes.append(row[9])
 
         def __str__(self):
-            return u'B %s %s | %s %s' % ( str(self.year), str(self.a_number), self.firstname, self.lastname)
+            return u'B %s %s | %s %s' % (str(self.year),
+                                         str(self.a_number),
+                                         self.firstname,
+                                         self.lastname)
 
     class RowDeath(RowBirth):
         """ Death row """
@@ -305,7 +309,10 @@ class Geneteka:
             super(Geneteka.RowDeath, self).__init__(row, 'D')
 
         def __str__(self):
-            return u'D %s %s | %s %s' % ( str(self.year), str(self.a_number), self.firstname, self.lastname)
+            return u'D %s %s | %s %s' % (str(self.year),
+                                         str(self.a_number),
+                                         self.firstname,
+                                         self.lastname)
 
     class RowMariage(AbstractRow):
         """ Marriage row """
@@ -329,7 +336,12 @@ class Geneteka:
                 self.notes.append(row[9])
 
         def __str__(self):
-            return u'M %s %s | %s %s | %s %s' % ( str(self.year), str(self.a_number), self.m_firstname, self.m_lastname, self.f_firstname, self.f_lastname)
+            return u'M %s %s | %s %s | %s %s' % (str(self.year),
+                                                 str(self.a_number),
+                                                 self.m_firstname,
+                                                 self.m_lastname,
+                                                 self.f_firstname,
+                                                 self.f_lastname)
 
     class Parser:
         row_type = None
